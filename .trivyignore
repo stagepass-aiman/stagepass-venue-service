@@ -1,0 +1,15 @@
+# .trivyignore
+#
+# RULE-21: every suppression must include:
+#   - CVE ID and affected package@version
+#   - Why it is not exploitable in this specific usage
+#   - Expiry date for review
+#
+# Format:
+#   # CVE-YYYY-NNNNN (package@version)
+#   # Reason: [why not exploitable in our usage]
+#   # Expires: YYYY-MM-DD
+#   CVE-YYYY-NNNNN
+#
+# No suppressions at Phase 4 scaffold time.
+# Add entries here only with written justification — never suppress blindly.

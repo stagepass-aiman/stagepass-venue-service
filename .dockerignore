@@ -1,0 +1,28 @@
+# Build outputs
+dist/
+coverage/
+
+# Dependencies — rebuilt from lockfile in Docker
+node_modules/
+
+# Version control
+.git/
+.gitignore
+
+# Test files — not needed in production image
+test/
+**/*.spec.ts
+**/*.integration.spec.ts
+jest.config.*
+
+# Dev tooling configs — not needed at runtime
+.eslintrc.js
+.prettierrc
+
+# Local env files — secrets come from Vault/K8s secrets, never baked in
+.env
+.env.*
+
+# IMPORTANT: do NOT add tsconfig.json or tsconfig.build.json here.
+# nest build requires both files. Excluding them breaks the Docker build.
+# RULE-07: Never add tsconfig.json to .dockerignore.

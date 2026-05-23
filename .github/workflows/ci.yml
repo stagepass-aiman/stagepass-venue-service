@@ -1,0 +1,223 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: stagepass-aiman/stagepass-venue-service
+
+jobs:
+  # ─── Sentinel ─────────────────────────────────────────────────────────────
+  # All other jobs declare `needs: sentinel`. This gives branch protection a
+  # single required check name ("ci") rather than requiring every job name to
+  # be listed in the branch protection rule. Adding a new job never breaks
+  # branch protection — only sentinel needs to be in the required checks list.
+  sentinel:
+    name: sentinel
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "CI triggered"
+
+  # ─── Secret Scanning ──────────────────────────────────────────────────────
+  secrets-scan:
+    name: secrets-scan
+    needs: sentinel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # gitleaks CLI — faster than the Action, pinned to a specific version.
+      # NFR-SEC-013: blocks on secret detection.
+      - name: Install gitleaks
+        run: |
+          curl -sSfL https://github.com/zricethezav/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_x64.tar.gz \
+            | tar -xz -C /usr/local/bin gitleaks
+
+      - name: Run gitleaks
+        run: gitleaks detect --source . --log-opts="HEAD~1..HEAD" --no-git
+
+  # ─── Lint ─────────────────────────────────────────────────────────────────
+  lint:
+    name: lint
+    needs: sentinel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run lint
+
+  # ─── Unit + Integration Tests ─────────────────────────────────────────────
+  test:
+    name: test
+    needs: sentinel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+
+      # Unit tests with coverage
+      - name: Run unit tests
+        run: npm run test:ci
+        env:
+          NODE_ENV: test
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage/
+
+  # ─── Integration Tests ────────────────────────────────────────────────────
+  integration-test:
+    name: integration-test
+    needs: sentinel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+
+      # Testcontainers starts MongoDB and Kafka inside Docker.
+      # The runner must have Docker available — ubuntu-latest includes Docker.
+      - name: Run integration tests
+        run: npm run test:integration
+        env:
+          NODE_ENV: test
+          KAFKA_BROKERS: localhost:29092
+          AUTH_JWKS_URI: http://localhost:8081/auth/jwks
+          MONGODB_URI: mongodb://localhost:27017/venue_test
+          OTEL_EXPORTER_OTLP_ENDPOINT: http://localhost:4318
+          OTEL_SERVICE_NAME: venue-service-test
+
+  # ─── SAST — SonarQube ─────────────────────────────────────────────────────
+  sast:
+    name: sast
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    # RULE-19: continue-on-error until SonarQube is cloud-accessible.
+    # The local SonarQube instance (stagepass-infrastructure) is not reachable
+    # from GitHub Actions runners. Re-enable when SonarCloud or a public
+    # SonarQube instance is configured in Phase 8.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+  # ─── Build Docker Image ───────────────────────────────────────────────────
+  build:
+    name: build
+    needs: [lint, test, integration-test]
+    runs-on: ubuntu-latest
+    outputs:
+      image-digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=sha-,format=short
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ─── Container Vulnerability Scan ─────────────────────────────────────────
+  trivy:
+    name: trivy
+    needs: build
+    runs-on: ubuntu-latest
+    # NFR-SEC-012: blocks on CRITICAL CVEs. HIGH severity is reported but not blocking
+    # at scaffold time — raise to blocking in Phase 7 once base image is hardened.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Trivy on filesystem (pre-build)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL
+          exit-code: "1"
+          trivyignores: .trivyignore
+
+      - name: Run Trivy on Docker image
+        # Only available when the image was pushed (not on PRs)
+        if: github.event_name != 'pull_request'
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+          severity: CRITICAL
+          exit-code: "1"
+          trivyignores: .trivyignore
+
+  # ─── Final sentinel — what branch protection checks against ───────────────
+  ci:
+    name: ci
+    needs: [secrets-scan, lint, test, integration-test, build, trivy]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Verify all jobs passed
+        run: |
+          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
+            echo "One or more required jobs failed."
+            exit 1
+          fi
+          echo "All required jobs passed."
