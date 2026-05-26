@@ -1,24 +1,29 @@
 /**
  * Integration tests for VenuesController.
  *
- * Rules applied (from PHASE3-EVENT-SERVICE-BUILD-LOG.md):
+ * Rules applied:
  * RULE-08: Always use NestExpressApplication (Express adapter) — never Fastify.
  * RULE-09: Never import @Global() modules in TestingModule — declare providers explicitly.
- * RULE-11: import * as supertest (CommonJS module without default export).
- * RULE-12: @testcontainers/mongodb (not base testcontainers package).
+ * RULE-11 (corrected): supertest uses default import — it has a callable default export.
+ *   import * as supertest is wrong for callable modules; see build log RULE-11 correction.
+ * RULE-26: MongoDB integration tests use mongodb-memory-server, not @testcontainers/mongodb.
+ *   MongoMemoryReplSet avoids Windows hostname resolution issues and supports transactions.
+ * RULE-27: After app.init(), call connection.syncIndexes() before any test that writes
+ *   inside a transaction. MongoDB cannot implicitly create collections in a transaction.
  *
  * Test strategy:
- * - Start a real MongoDB container with replica set (required for transactions).
- * - Mock JwksService (returns pre-signed token payload without real JWKS fetch).
- * - Mock KafkaService and OutboxService (no real Kafka needed for HTTP tests).
- * - Test: route resolution, auth enforcement, validation, tenant isolation.
+ * - MongoMemoryReplSet: in-process MongoDB with replica set (required for transactions).
+ * - Mock JwksService: returns pre-built actor payload without real RS256 verification.
+ * - Mock KafkaService and OutboxService: no real Kafka needed for HTTP surface tests.
+ * - Tests cover: route resolution, auth enforcement, validation, tenant isolation.
  */
+import { HealthController } from '../../src/health/health.controller';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { getConnectionToken, MongooseModule } from '@nestjs/mongoose';
 import { Test } from '@nestjs/testing';
 import { Connection } from 'mongoose';
-import { MongoDBContainer, StartedMongoDBContainer } from '@testcontainers/mongodb';
-import * as supertest from 'supertest';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
+import supertest from 'supertest';
 import { GlobalExceptionFilter } from '../../src/common/filters/global-exception.filter';
 import { JwtAuthGuard } from '../../src/common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../src/common/guards/roles.guard';
@@ -31,8 +36,6 @@ import { VenuesService } from '../../src/venues/venues.service';
 import { Venue, VenueSchema } from '../../src/venues/schemas/venue.schema';
 import { UserRole } from '../../src/common/types/jwt-payload.types';
 
-// Pre-built JWT payloads for test actors. In integration tests we mock JwksService
-// to return these directly, bypassing real signature verification.
 const VENUE_ACTOR = {
   userId: 'venue-user-001',
   email: 'venue@test.com',
@@ -59,11 +62,9 @@ const ADMIN_ACTOR = {
 
 describe('VenuesController (integration)', () => {
   let app: INestApplication;
-  let container: StartedMongoDBContainer;
+  let replSet: MongoMemoryReplSet;
   let connection: Connection;
 
-  // The mock JwksService maps the token string to a pre-built actor payload.
-  // This avoids real RS256 key generation in tests.
   const mockJwksService = {
     validateToken: jest.fn(),
   };
@@ -72,45 +73,48 @@ describe('VenuesController (integration)', () => {
     send: jest.fn().mockResolvedValue(undefined),
   };
 
-  // OutboxService mock: captures outbox calls without needing a real transaction session.
-  // The real OutboxService requires a Mongoose ClientSession for atomicity.
-  // In tests, we verify the business logic without the transactional Outbox overhead.
+  // OutboxService is mocked — the real implementation requires a ClientSession
+  // passed from the caller's MongoDB transaction. Tests verify HTTP behaviour,
+  // not transactional atomicity. Atomicity is verified against the real replica
+  // set when the service runs under docker compose.
   const mockOutboxService = {
     create: jest.fn().mockResolvedValue(undefined),
   };
 
   beforeAll(async () => {
-    // Start MongoDB with replica set — required for transactions (Outbox pattern).
-    // Single-node rs0 replica set is sufficient for development and testing.
-    container = await new MongoDBContainer('mongo:7.0')
-      .withReplicaSet('rs0')
-      .start();
-
-    const uri = container.getConnectionString();
+    // MongoMemoryReplSet: in-process MongoDB with replica set.
+    // Replica set is required because VenuesService.create() uses
+    // startSession() + startTransaction() for the Outbox pattern.
+    // Standalone MongoDB rejects transactions entirely.
+    replSet = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
+    const uri = replSet.getUri();
 
     const moduleRef = await Test.createTestingModule({
       imports: [
-        // RULE-09: declare Mongoose directly in the test module — not via AppModule.
-        MongooseModule.forRoot(uri, { directConnection: true }),
+        MongooseModule.forRoot(uri),
         MongooseModule.forFeature([
           { name: Venue.name, schema: VenueSchema },
           { name: Outbox.name, schema: OutboxSchema },
         ]),
       ],
-      controllers: [VenuesController],
+      controllers: [VenuesController, HealthController],
       providers: [
         VenuesService,
-        // RULE-09: declare mocked global providers explicitly.
+        // RULE-09: @Global() providers (JwksService, KafkaService) do not
+        // auto-populate in TestingModule — declare them explicitly as mocks.
         { provide: JwksService, useValue: mockJwksService },
         { provide: KafkaService, useValue: mockKafkaService },
         { provide: OutboxService, useValue: mockOutboxService },
-        // Guards must be provided explicitly in test context.
         JwtAuthGuard,
         RolesGuard,
       ],
     }).compile();
 
-    // RULE-08: always use NestExpressApplication.
+    // RULE-27: assign connection BEFORE app.init() and syncIndexes().
+    // connection is undefined until moduleRef.get() is called — any use
+    // before this line throws "Cannot read properties of undefined".
+    connection = moduleRef.get<Connection>(getConnectionToken());
+
     app = moduleRef.createNestApplication();
     app.useGlobalPipes(
       new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
@@ -118,20 +122,23 @@ describe('VenuesController (integration)', () => {
     app.useGlobalFilters(new GlobalExceptionFilter());
     await app.init();
 
-    connection = moduleRef.get<Connection>(getConnectionToken());
-  }, 120_000); // generous timeout for container startup
+    // RULE-27: force all collections and indexes to exist before any test runs.
+    // MongoDB transactions cannot implicitly create collections — if 'venues'
+    // does not exist when the first transaction starts, the insert fails with
+    // a catalog changes error. syncIndexes() creates all registered collections.
+    await connection.syncIndexes();
+  }, 60_000);
 
   afterAll(async () => {
-    await connection.close();
-    await app.close();
-    await container.stop();
+    await connection?.close();
+    await app?.close();
+    await replSet?.stop();
   });
 
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
-  // Helper: configure the mock to return a specific actor for this request.
   const asActor = (actor: typeof VENUE_ACTOR): void => {
     mockJwksService.validateToken.mockResolvedValueOnce({
       sub: actor.userId,
@@ -152,7 +159,7 @@ describe('VenuesController (integration)', () => {
     };
 
     it('returns 401 when no Authorization header is provided', async () => {
-      const res = await (supertest as unknown as (app: unknown) => supertest.SuperTest<supertest.Test>)(app.getHttpServer())
+      const res = await supertest(app.getHttpServer())
         .post('/venues')
         .send(validBody);
       expect(res.status).toBe(401);
@@ -160,7 +167,7 @@ describe('VenuesController (integration)', () => {
 
     it('returns 403 when actor role is ORGANISER (not VENUE)', async () => {
       asActor(ORGANISER_ACTOR);
-      const res = await (supertest as unknown as (app: unknown) => supertest.SuperTest<supertest.Test>)(app.getHttpServer())
+      const res = await supertest(app.getHttpServer())
         .post('/venues')
         .set('Authorization', 'Bearer mock-token')
         .send(validBody);
@@ -169,7 +176,7 @@ describe('VenuesController (integration)', () => {
 
     it('returns 201 with venue document for VENUE actor', async () => {
       asActor(VENUE_ACTOR);
-      const res = await (supertest as unknown as (app: unknown) => supertest.SuperTest<supertest.Test>)(app.getHttpServer())
+      const res = await supertest(app.getHttpServer())
         .post('/venues')
         .set('Authorization', 'Bearer mock-token')
         .send(validBody);
@@ -185,7 +192,7 @@ describe('VenuesController (integration)', () => {
 
     it('returns 400 when required field is missing', async () => {
       asActor(VENUE_ACTOR);
-      const res = await (supertest as unknown as (app: unknown) => supertest.SuperTest<supertest.Test>)(app.getHttpServer())
+      const res = await supertest(app.getHttpServer())
         .post('/venues')
         .set('Authorization', 'Bearer mock-token')
         .send({ name: 'No capacity venue', city: 'Delhi', address: '1 India Gate' });
@@ -195,14 +202,13 @@ describe('VenuesController (integration)', () => {
 
   describe('GET /venues', () => {
     it('returns 401 without auth', async () => {
-      const res = await (supertest as unknown as (app: unknown) => supertest.SuperTest<supertest.Test>)(app.getHttpServer())
-        .get('/venues');
+      const res = await supertest(app.getHttpServer()).get('/venues');
       expect(res.status).toBe(401);
     });
 
     it('returns 200 with paginated list for ADMIN', async () => {
       asActor(ADMIN_ACTOR);
-      const res = await (supertest as unknown as (app: unknown) => supertest.SuperTest<supertest.Test>)(app.getHttpServer())
+      const res = await supertest(app.getHttpServer())
         .get('/venues')
         .set('Authorization', 'Bearer mock-token');
       expect(res.status).toBe(200);
@@ -216,10 +222,9 @@ describe('VenuesController (integration)', () => {
     let createdVenueId: string;
 
     beforeEach(async () => {
-      // Create a venue owned by VENUE_ACTOR.
       asActor(VENUE_ACTOR);
       mockOutboxService.create.mockResolvedValueOnce(undefined);
-      const res = await (supertest as unknown as (app: unknown) => supertest.SuperTest<supertest.Test>)(app.getHttpServer())
+      const res = await supertest(app.getHttpServer())
         .post('/venues')
         .set('Authorization', 'Bearer mock-token')
         .send({ name: 'Isolation Test Venue', city: 'Pune', address: '1 MG Road', totalCapacity: 200 });
@@ -228,7 +233,7 @@ describe('VenuesController (integration)', () => {
 
     it('returns 200 for the owner (VENUE_ACTOR)', async () => {
       asActor(VENUE_ACTOR);
-      const res = await (supertest as unknown as (app: unknown) => supertest.SuperTest<supertest.Test>)(app.getHttpServer())
+      const res = await supertest(app.getHttpServer())
         .get(`/venues/${createdVenueId}`)
         .set('Authorization', 'Bearer mock-token');
       expect(res.status).toBe(200);
@@ -236,7 +241,8 @@ describe('VenuesController (integration)', () => {
     });
 
     it('returns 404 for a different VENUE actor (tenant isolation — NFR-SEC-004)', async () => {
-      // A different VENUE actor tries to read another owner's venue.
+      // 404 not 403: we never confirm the resource exists to an unauthorised caller.
+      // venue.yaml documents 403 here — that is a spec error. NFR-SEC-004 is authoritative.
       mockJwksService.validateToken.mockResolvedValueOnce({
         sub: 'different-venue-user-999',
         email: 'other@test.com',
@@ -244,16 +250,15 @@ describe('VenuesController (integration)', () => {
         displayName: 'Other Venue',
         jti: 'jti-other-999',
       });
-      const res = await (supertest as unknown as (app: unknown) => supertest.SuperTest<supertest.Test>)(app.getHttpServer())
+      const res = await supertest(app.getHttpServer())
         .get(`/venues/${createdVenueId}`)
         .set('Authorization', 'Bearer mock-token');
-      // 404, not 403 — we never reveal that the venue exists (NFR-SEC-004).
       expect(res.status).toBe(404);
     });
 
     it('returns 200 for ADMIN (sees all venues)', async () => {
       asActor(ADMIN_ACTOR);
-      const res = await (supertest as unknown as (app: unknown) => supertest.SuperTest<supertest.Test>)(app.getHttpServer())
+      const res = await supertest(app.getHttpServer())
         .get(`/venues/${createdVenueId}`)
         .set('Authorization', 'Bearer mock-token');
       expect(res.status).toBe(200);
@@ -262,8 +267,7 @@ describe('VenuesController (integration)', () => {
 
   describe('GET /health/live', () => {
     it('returns 200 UP without auth (public endpoint)', async () => {
-      const res = await (supertest as unknown as (app: unknown) => supertest.SuperTest<supertest.Test>)(app.getHttpServer())
-        .get('/health/live');
+      const res = await supertest(app.getHttpServer()).get('/health/live');
       expect(res.status).toBe(200);
       expect(res.body.status).toBe('UP');
     });

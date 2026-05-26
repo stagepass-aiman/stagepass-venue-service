@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as jwt from 'jsonwebtoken';
-import * as jwksRsa from 'jwks-rsa';
+import jwksRsa from 'jwks-rsa';
 import { JwtPayload } from '../common/types/jwt-payload.types';
 
 /**
@@ -20,7 +20,7 @@ import { JwtPayload } from '../common/types/jwt-payload.types';
 @Injectable()
 export class JwksService implements OnModuleInit {
   private readonly logger = new Logger(JwksService.name);
-  private client: jwksRsa.JwksClient;
+  private client!: ReturnType<typeof jwksRsa>;
 
   constructor(private readonly config: ConfigService) {}
 

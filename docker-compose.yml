@@ -58,20 +58,30 @@ services:
       retries: 10
       start_period: 30s
 
-  # Creates the venue.events and venue.events.dlq topics on startup.
+  # REPLACE WITH:
   kafka-init:
     image: confluentinc/cp-kafka:7.6.0
     depends_on:
       kafka:
         condition: service_healthy
-    entrypoint: >
-      bash -c "
-        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists
-          --topic venue.events --partitions 6 --replication-factor 1 &&
-        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists
-          --topic venue.events.dlq --partitions 6 --replication-factor 1 &&
+    # List form guarantees Docker splits command correctly.
+    # entrypoint: string form with > folds into one token — Docker treats the
+    # entire folded string as the executable name, causing exit 127.
+    command:
+      - bash
+      - -c
+      - |
+        kafka-topics --bootstrap-server kafka:9092 \
+          --create --if-not-exists \
+          --topic venue.events \
+          --partitions 6 \
+          --replication-factor 1 &&
+        kafka-topics --bootstrap-server kafka:9092 \
+          --create --if-not-exists \
+          --topic venue.events.dlq \
+          --partitions 6 \
+          --replication-factor 1 &&
         echo 'Topics created.'
-      "
 
   # ─── Venue Service ────────────────────────────────────────────────────────
   venue-service:
