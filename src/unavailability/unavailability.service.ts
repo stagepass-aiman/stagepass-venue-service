@@ -52,7 +52,9 @@ export class UnavailabilityService {
       },
     ]);
 
-    this.logger.log(`Unavailability window created for venue ${venueId}: ${dto.fromDate} → ${dto.toDate}`);
+    this.logger.log(
+      `Unavailability window created for venue ${venueId}: ${dto.fromDate} → ${dto.toDate}`,
+    );
     return window;
   }
 }

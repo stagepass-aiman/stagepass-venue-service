@@ -159,9 +159,7 @@ describe('VenuesController (integration)', () => {
     };
 
     it('returns 401 when no Authorization header is provided', async () => {
-      const res = await supertest(app.getHttpServer())
-        .post('/venues')
-        .send(validBody);
+      const res = await supertest(app.getHttpServer()).post('/venues').send(validBody);
       expect(res.status).toBe(401);
     });
 
@@ -227,7 +225,12 @@ describe('VenuesController (integration)', () => {
       const res = await supertest(app.getHttpServer())
         .post('/venues')
         .set('Authorization', 'Bearer mock-token')
-        .send({ name: 'Isolation Test Venue', city: 'Pune', address: '1 MG Road', totalCapacity: 200 });
+        .send({
+          name: 'Isolation Test Venue',
+          city: 'Pune',
+          address: '1 MG Road',
+          totalCapacity: 200,
+        });
       createdVenueId = res.body.venueId;
     });
 

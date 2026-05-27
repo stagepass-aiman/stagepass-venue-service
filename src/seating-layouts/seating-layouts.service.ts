@@ -5,7 +5,11 @@ import { v4 as uuidv4 } from 'uuid';
 import { AuthenticatedUser, UserRole } from '../common/types/jwt-payload.types';
 import { VenuesService } from '../venues/venues.service';
 import { CreateLayoutDto } from './dto/create-layout.dto';
-import { LayoutSection, SeatingLayout, SeatingLayoutDocument } from './schemas/seating-layout.schema';
+import {
+  LayoutSection,
+  SeatingLayout,
+  SeatingLayoutDocument,
+} from './schemas/seating-layout.schema';
 
 @Injectable()
 export class SeatingLayoutsService {
@@ -35,10 +39,7 @@ export class SeatingLayoutsService {
     }
 
     // Compute version number: latest version + 1.
-    const latest = await this.layoutModel
-      .findOne({ venueId })
-      .sort({ version: -1 })
-      .exec();
+    const latest = await this.layoutModel.findOne({ venueId }).sort({ version: -1 }).exec();
     const version = (latest?.version ?? 0) + 1;
 
     // Compute totalSeats from the section tree.
@@ -82,7 +83,11 @@ export class SeatingLayoutsService {
     }
   }
 
-  async findOne(venueId: string, layoutId: string, actor: AuthenticatedUser): Promise<SeatingLayoutDocument> {
+  async findOne(
+    venueId: string,
+    layoutId: string,
+    actor: AuthenticatedUser,
+  ): Promise<SeatingLayoutDocument> {
     await this.venuesService.findOne(venueId, actor);
     const layout = await this.layoutModel.findOne({ layoutId, venueId }).exec();
     if (!layout) throw new NotFoundException('Seating layout not found');

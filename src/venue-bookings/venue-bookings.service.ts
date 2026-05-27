@@ -1,9 +1,4 @@
-import {
-  ConflictException,
-  Injectable,
-  Logger,
-  NotFoundException,
-} from '@nestjs/common';
+import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import mongoose, { Connection, Model } from 'mongoose';
 import { v4 as uuidv4 } from 'uuid';
@@ -151,7 +146,11 @@ export class VenueBookingsService {
     return booking;
   }
 
-  async accept(vbId: string, actor: AuthenticatedUser, idempotencyKey?: string): Promise<VenueBookingDocument> {
+  async accept(
+    vbId: string,
+    actor: AuthenticatedUser,
+    idempotencyKey?: string,
+  ): Promise<VenueBookingDocument> {
     const booking = await this.vbModel.findOne({ vbId }).exec();
     if (!booking) throw new NotFoundException('Venue booking not found');
 

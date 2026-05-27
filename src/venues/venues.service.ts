@@ -110,7 +110,9 @@ export class VenuesService {
     const items = await this.venueModel.find(filter).sort({ _id: 1 }).limit(limit).exec();
 
     const nextCursor =
-      items.length === limit ? (items[items.length - 1]._id as mongoose.Types.ObjectId).toString() : null;
+      items.length === limit
+        ? (items[items.length - 1]._id as mongoose.Types.ObjectId).toString()
+        : null;
 
     return { items, nextCursor };
   }
@@ -154,11 +156,26 @@ export class VenuesService {
     }
 
     const updatedFields: string[] = [];
-    if (dto.name !== undefined) { venue.name = dto.name; updatedFields.push('name'); }
-    if (dto.city !== undefined) { venue.city = dto.city; updatedFields.push('city'); }
-    if (dto.address !== undefined) { venue.address = dto.address; updatedFields.push('address'); }
-    if (dto.facilities !== undefined) { venue.facilities = dto.facilities; updatedFields.push('facilities'); }
-    if (dto.photoUrls !== undefined) { venue.photoUrls = dto.photoUrls; updatedFields.push('photoUrls'); }
+    if (dto.name !== undefined) {
+      venue.name = dto.name;
+      updatedFields.push('name');
+    }
+    if (dto.city !== undefined) {
+      venue.city = dto.city;
+      updatedFields.push('city');
+    }
+    if (dto.address !== undefined) {
+      venue.address = dto.address;
+      updatedFields.push('address');
+    }
+    if (dto.facilities !== undefined) {
+      venue.facilities = dto.facilities;
+      updatedFields.push('facilities');
+    }
+    if (dto.photoUrls !== undefined) {
+      venue.photoUrls = dto.photoUrls;
+      updatedFields.push('photoUrls');
+    }
 
     const session = await this.connection.startSession();
     try {
@@ -238,7 +255,15 @@ export class VenuesService {
   }
 
   /** Used internally by SeatingLayoutsService to update latestLayoutId after a new layout is created. */
-  async setLatestLayoutId(venueId: string, layoutId: string, session: mongoose.ClientSession): Promise<void> {
-    await this.venueModel.updateOne({ venueId }, { $set: { latestLayoutId: layoutId } }, { session });
+  async setLatestLayoutId(
+    venueId: string,
+    layoutId: string,
+    session: mongoose.ClientSession,
+  ): Promise<void> {
+    await this.venueModel.updateOne(
+      { venueId },
+      { $set: { latestLayoutId: layoutId } },
+      { session },
+    );
   }
 }

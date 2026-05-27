@@ -65,9 +65,6 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       traceId,
     };
 
-    response
-      .status(status)
-      .setHeader('Content-Type', 'application/problem+json')
-      .json(body);
+    response.status(status).setHeader('Content-Type', 'application/problem+json').json(body);
   }
 }

@@ -6,10 +6,7 @@ import { VenuesService } from './venues.service';
 import { Venue, VenueSchema } from './schemas/venue.schema';
 
 @Module({
-  imports: [
-    MongooseModule.forFeature([{ name: Venue.name, schema: VenueSchema }]),
-    OutboxModule,
-  ],
+  imports: [MongooseModule.forFeature([{ name: Venue.name, schema: VenueSchema }]), OutboxModule],
   controllers: [VenuesController],
   providers: [VenuesService],
   exports: [VenuesService, MongooseModule],

@@ -3,7 +3,10 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { VenuesModule } from '../venues/venues.module';
 import { UnavailabilityController } from './unavailability.controller';
 import { UnavailabilityService } from './unavailability.service';
-import { UnavailabilityWindow, UnavailabilityWindowSchema } from './schemas/unavailability-window.schema';
+import {
+  UnavailabilityWindow,
+  UnavailabilityWindowSchema,
+} from './schemas/unavailability-window.schema';
 
 @Module({
   imports: [

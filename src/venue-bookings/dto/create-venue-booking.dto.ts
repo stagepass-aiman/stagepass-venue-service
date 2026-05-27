@@ -1,4 +1,13 @@
-import { IsDateString, IsInt, IsOptional, IsString, IsUUID, Matches, MaxLength, Min } from 'class-validator';
+import {
+  IsDateString,
+  IsInt,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Matches,
+  MaxLength,
+  Min,
+} from 'class-validator';
 
 export class CreateVenueBookingDto {
   @IsUUID()
@@ -30,7 +39,8 @@ export class CreateVenueBookingDto {
    * This value is immutable once the VenueBooking reaches ACCEPTED.
    */
   @Matches(/^\d+\.\d{4}$/, {
-    message: 'venueRevenueSharePercentage must be a decimal string with 4 decimal places e.g. "30.0000"',
+    message:
+      'venueRevenueSharePercentage must be a decimal string with 4 decimal places e.g. "30.0000"',
   })
   venueRevenueSharePercentage!: string;
 }

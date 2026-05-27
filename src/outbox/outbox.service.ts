@@ -33,10 +33,7 @@ export interface CreateOutboxRecordDto {
 export class OutboxService {
   constructor(@InjectModel(Outbox.name) private readonly outboxModel: Model<OutboxDocument>) {}
 
-  async create(
-    session: ClientSession,
-    dto: CreateOutboxRecordDto,
-  ): Promise<OutboxDocument> {
+  async create(session: ClientSession, dto: CreateOutboxRecordDto): Promise<OutboxDocument> {
     const [record] = await this.outboxModel.create(
       [
         {

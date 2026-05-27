@@ -2,7 +2,10 @@ import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { OutboxModule } from '../outbox/outbox.module';
 import { VenuesModule } from '../venues/venues.module';
-import { UnavailabilityWindow, UnavailabilityWindowSchema } from '../unavailability/schemas/unavailability-window.schema';
+import {
+  UnavailabilityWindow,
+  UnavailabilityWindowSchema,
+} from '../unavailability/schemas/unavailability-window.schema';
 import { VenueBookingsController } from './venue-bookings.controller';
 import { VenueBookingsService } from './venue-bookings.service';
 import { VenueBooking, VenueBookingSchema } from './schemas/venue-booking.schema';
