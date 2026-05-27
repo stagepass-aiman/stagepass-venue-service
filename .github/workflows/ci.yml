@@ -110,28 +110,16 @@ jobs:
 
   # ─── SAST — SonarQube ─────────────────────────────────────────────────────
   sast:
-    name: sast
-    needs: [lint, test]
+    name: SAST — SonarQube
     runs-on: ubuntu-latest
-    # RULE-19: continue-on-error until SonarQube is cloud-accessible.
-    # The local SonarQube instance (stagepass-infrastructure) is not reachable
-    # from GitHub Actions runners. Re-enable when SonarCloud or a public
-    # SonarQube instance is configured in Phase 8.
-    continue-on-error: true
+    needs: test
+    continue-on-error: true   # ← ADD THIS LINE
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: "npm"
-      - run: npm ci
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@master
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
   # ─── Build Docker Image ───────────────────────────────────────────────────
   build:
