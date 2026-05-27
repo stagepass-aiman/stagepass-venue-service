@@ -5,7 +5,11 @@ import { v4 as uuidv4 } from 'uuid';
 import { AuthenticatedUser, UserRole } from '../common/types/jwt-payload.types';
 import { VenuesService } from '../venues/venues.service';
 import { CreateLayoutDto } from './dto/create-layout.dto';
-import { LayoutSection, SeatingLayout, SeatingLayoutDocument } from './schemas/seating-layout.schema';
+import {
+  LayoutSection,
+  SeatingLayout,
+  SeatingLayoutDocument,
+} from './schemas/seating-layout.schema';
 
 /* eslint-disable @typescript-eslint/no-unsafe-call */
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
