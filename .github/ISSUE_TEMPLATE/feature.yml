@@ -1,0 +1,23 @@
+name: Feature
+description: New feature or behaviour
+labels: ["feature"]
+body:
+  - type: textarea
+    id: purpose
+    attributes:
+      label: Purpose
+      description: What and why?
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: Checkboxes
+    validations:
+      required: true
+  - type: input
+    id: blocked-by
+    attributes:
+      label: Blocked By
+      description: "org/repo#issue format"
