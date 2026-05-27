@@ -1,10 +1,4 @@
-import {
-  ConflictException,
-  ForbiddenException,
-  Injectable,
-  Logger,
-  NotFoundException,
-} from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectConnection, InjectModel } from '@nestjs/mongoose';
 import mongoose, { Connection, Model } from 'mongoose';
 import { v4 as uuidv4 } from 'uuid';
@@ -142,7 +136,7 @@ export class VenuesService {
     venueId: string,
     dto: UpdateVenueDto,
     actor: AuthenticatedUser,
-    idempotencyKey?: string,
+    _idempotencyKey?: string,
   ): Promise<VenueDocument> {
     const venue = await this.venueModel.findOne({ venueId }).exec();
     if (!venue) throw new NotFoundException('Venue not found');

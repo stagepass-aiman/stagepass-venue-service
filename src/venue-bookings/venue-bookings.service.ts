@@ -149,7 +149,7 @@ export class VenueBookingsService {
   async accept(
     vbId: string,
     actor: AuthenticatedUser,
-    idempotencyKey?: string,
+    _idempotencyKey?: string,
   ): Promise<VenueBookingDocument> {
     const booking = await this.vbModel.findOne({ vbId }).exec();
     if (!booking) throw new NotFoundException('Venue booking not found');

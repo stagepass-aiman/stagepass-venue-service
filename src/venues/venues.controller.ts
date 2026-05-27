@@ -94,8 +94,8 @@ export class VenuesController {
   async getVenueRevenue(
     @Param('venueId') venueId: string,
     @CurrentUser() actor: AuthenticatedUser,
-    @Query('cursor') cursor?: string,
-    @Query('pageSize') pageSize?: string,
+    @Query('cursor') _cursor?: string,
+    @Query('pageSize') _pageSize?: string,
   ): Promise<unknown> {
     await this.venuesService.findOne(venueId, actor);
     return { items: [], nextCursor: null };
