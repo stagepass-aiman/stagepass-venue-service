@@ -7,6 +7,7 @@ All notable changes to `stagepass-venue-service` follow [Semantic Versioning](ht
 ## [0.1.0] — 2026-05-22
 
 ### Added
+
 - Full NestJS 10 scaffold with MongoDB (Mongoose) and KafkaJS
 - `Venue` CRUD: `POST /venues`, `GET /venues`, `GET /venues/:venueId`, `PUT /venues/:venueId`
 - `SeatingLayout` management: `POST /venues/:venueId/layouts`, `GET /venues/:venueId/layouts`, `GET /venues/:venueId/layouts/:layoutId`
@@ -28,3 +29,27 @@ All notable changes to `stagepass-venue-service` follow [Semantic Versioning](ht
 - Multi-stage Dockerfile with non-root user
 - GitHub Actions CI pipeline with gitleaks, lint, test, integration-test, SonarQube, Trivy
 - Integration tests with Testcontainers (MongoDB replica set)
+
+## [0.1.1] - 2026-06-13
+
+### Security
+
+- Enforce object-level authorization on read-by-id endpoints (NFR-SEC-004, BOLA).
+  `GET /venues/:id` no longer returns 200 to ORGANISER/CUSTOMER for non-ACTIVE
+  venues; non-owner public roles receive 404. `GET /venue-bookings/:vbId` returns
+  403 to CUSTOMER (wrong role) and 404 to a non-party Organiser/Venue. Seating-
+  layout reads inherit venue visibility via delegation.
+
+### Changed
+
+- Behaviour: `POST /venue-bookings` against a non-ACTIVE venue now returns 404
+  (was 409), to avoid confirming venue existence to a caller who cannot see it.
+
+### Tests
+
+- Add integration suites for venue-bookings and seating-layouts controllers
+  (role × status matrices). Three tested controllers now (was one).
+
+### Fixed (tooling)
+
+- `npm run test` no longer matches `*.integration.spec.ts`.

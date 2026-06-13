@@ -56,8 +56,18 @@ export class VenueBookingsController {
     });
   }
 
-  /** GET /venue-bookings/:vbId */
+  /**
+   * GET /venue-bookings/:vbId — Get a single booking.
+   *
+   * A venue-booking is a private two-party negotiation (Organiser ⇄ Venue) plus
+   * Admin. CUSTOMER is never a party, so it is excluded from @Roles → RolesGuard
+   * returns 403 BEFORE any lookup (wrong role: nothing to conceal, NFR-SEC-003).
+   * For the named roles, VenueBookingsService.findOne() then applies object-level
+   * authorization → 404 for a non-party Organiser/Venue (NFR-SEC-004).
+   * venue.yaml documents both 403 and 404 for this endpoint; both are now enforced.
+   */
   @Get(':vbId')
+  @Roles(UserRole.ORGANISER, UserRole.VENUE, UserRole.ADMIN)
   async getVenueBooking(
     @Param('vbId') vbId: string,
     @CurrentUser() actor: AuthenticatedUser,
