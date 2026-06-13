@@ -11,7 +11,7 @@
     "lint": "eslint \"{src,test}/**/*.ts\" --max-warnings 0",
     "format": "prettier --write \"{src,test}/**/*.ts\"",
     "format:check": "prettier --check \"{src,test}/**/*.ts\"",
-    "test": "jest --testPathPattern='\\.spec\\.ts$' --passWithNoTests",
+    "test": "jest --testPathPattern='\\.spec\\.ts$' --testPathIgnorePatterns='\\.integration\\.spec\\.ts$' --passWithNoTests",
     "test:integration": "jest --testPathPattern='\\.integration\\.spec\\.ts$' --runInBand --passWithNoTests",
     "test:cov": "jest --coverage --passWithNoTests",
     "test:ci": "jest --coverage --ci --passWithNoTests"
@@ -82,13 +82,13 @@
     ],
     "coverageDirectory": "coverage",
     "coverageThreshold": {
-  "global": {
-    "branches": 15,
-    "functions": 20,
-    "lines": 20,
-    "statements": 20
-  }
-},
+      "global": {
+        "branches": 15,
+        "functions": 20,
+        "lines": 20,
+        "statements": 20
+      }
+    },
     "testEnvironment": "node",
     "testTimeout": 60000
   }
