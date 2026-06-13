@@ -86,10 +86,13 @@ export class VenuesService {
 
     const filter: mongoose.FilterQuery<Venue> = {};
 
-    // Role-scoped filtering (venue.yaml listVenues description):
-    // VENUE actor: own venues only.
-    // ORGANISER / CUSTOMER: ACTIVE venues for discovery.
-    // ADMIN: all venues.
+    // Role-scoped filtering. This is the QUERY form of the per-document
+    // visibility contract in canView(): a row this filter excludes for a given
+    // actor MUST also be invisible (404) on findOne(). The two must stay in
+    // lockstep — the parity test in the integration suite enforces it.
+    //   VENUE actor:        own venues only.
+    //   ORGANISER/CUSTOMER: ACTIVE venues only (public discovery).
+    //   ADMIN:              all venues.
     if (actor.role === UserRole.VENUE) {
       filter.ownerId = actor.userId;
     } else if (actor.role === UserRole.CUSTOMER || actor.role === UserRole.ORGANISER) {
@@ -111,6 +114,36 @@ export class VenuesService {
     return { items, nextCursor };
   }
 
+  /**
+   * Object-level visibility predicate for a single venue (NFR-SEC-004).
+   *
+   * This is the per-document form of the role-scoped query filter in findAll().
+   * They MUST agree: a venue findAll() would exclude for an actor must also be
+   * 404 here. Any change to one requires the same change to the other.
+   *
+   *   ADMIN              → all venues, any status
+   *   VENUE              → own venues only (ownerId === userId), any status
+   *   ORGANISER/CUSTOMER → publicly-listed venues only (status === 'ACTIVE')
+   *
+   * "Publicly listed" maps to status === 'ACTIVE' because the Venue schema has
+   * no separate listing flag today. If one is added, extend this predicate.
+   *
+   * Default branch fails CLOSED: an unrecognised role sees nothing.
+   */
+  private canView(venue: VenueDocument, actor: AuthenticatedUser): boolean {
+    switch (actor.role) {
+      case UserRole.ADMIN:
+        return true;
+      case UserRole.VENUE:
+        return venue.ownerId === actor.userId;
+      case UserRole.ORGANISER:
+      case UserRole.CUSTOMER:
+        return venue.status === 'ACTIVE';
+      default:
+        return false;
+    }
+  }
+
   async findOne(venueId: string, actor: AuthenticatedUser): Promise<VenueDocument> {
     const venue = await this.venueModel.findOne({ venueId }).exec();
 
@@ -118,13 +151,15 @@ export class VenuesService {
       throw new NotFoundException('Venue not found');
     }
 
-    // NFR-SEC-004: Tenant isolation. VENUE actor can only see own venues.
-    // Return 404 — not 403 — to avoid leaking that the venue exists.
-    // Note: venue.yaml description says 403, but NFR-SEC-004 and platform
-    // convention (Event Service precedent) require 404. NFR wins.
-    if (actor.role === UserRole.VENUE && venue.ownerId !== actor.userId) {
+    // NFR-SEC-004: object-level authorization, default-DENY. If the actor cannot
+    // view this specific venue, return 404 (never 403) so we never confirm the
+    // venue exists to a caller who is not entitled to see it. The previous guard
+    // only narrowed the VENUE role and let ORGANISER/CUSTOMER fall through to a
+    // 200 for non-ACTIVE venues (the leak). canView() now covers every role.
+    // (venue.yaml, post docs #40, documents 404 for this case — NFR and spec agree.)
+    if (!this.canView(venue, actor)) {
       this.logger.warn(
-        `Tenant isolation violation: userId=${actor.userId} attempted access to venueId=${venueId}`,
+        `Tenant isolation: userId=${actor.userId} role=${actor.role} denied access to venueId=${venueId}`,
       );
       throw new NotFoundException('Venue not found');
     }

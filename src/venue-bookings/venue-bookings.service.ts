@@ -38,10 +38,21 @@ export class VenueBookingsService {
       if (existing) return existing;
     }
 
-    // Verify the target venue exists and is ACTIVE.
+    // Verify the target venue exists and is visible to this Organiser.
+    // findOne() applies NFR-SEC-004 visibility: for an ORGANISER actor it returns
+    // the venue ONLY if status === 'ACTIVE'. So a non-existent OR non-ACTIVE venue
+    // yields 404 here — NOT 409. (A 409 "not available" would confirm the venue
+    // exists to a caller who can't otherwise see it: an enumeration leak. This is
+    // the deliberate 409→404 behaviour change that came with the findOne() fix.)
     const venue = await this.venuesService.findOne(dto.venueId, actor);
+
+    // Defence in depth: assert the bookable invariant locally so create() does not
+    // silently depend on findOne()'s visibility staying status-scoped. Redundant
+    // for an ORGANISER today (findOne already filtered ACTIVE), but load-bearing
+    // if this endpoint is ever opened to a role whose findOne() is not status-
+    // filtered (e.g. ADMIN). Fails closed with 404, consistent with the above.
     if (venue.status !== 'ACTIVE') {
-      throw new ConflictException('Venue is not available for booking');
+      throw new NotFoundException('Venue not found');
     }
 
     const from = new Date(dto.fromDate);
@@ -115,7 +126,11 @@ export class VenueBookingsService {
       const ownedVenues = await this.getOwnedVenueIds(actor.userId);
       filter.venueId = { $in: ownedVenues };
     }
-    // ADMIN: sees all.
+    // ADMIN: sees all. CUSTOMER: not a party — the list controller has no @Roles
+    // gate, but a CUSTOMER reaching here matches none of the branches above and
+    // so gets an unfiltered query. NOTE: listVenueBookings has no @Roles either;
+    // hardening the list endpoint is tracked separately (out of scope for this
+    // object-level fix, which targets read-by-id leaks).
 
     if (status) filter.status = status;
     if (venueId) filter.venueId = venueId;
@@ -130,20 +145,50 @@ export class VenueBookingsService {
     return { items, nextCursor };
   }
 
+  /**
+   * Object-level visibility predicate for a single venue-booking (NFR-SEC-004).
+   *
+   * A venue-booking is a private negotiation between exactly two parties — the
+   * requesting Organiser and the owning Venue — plus Admin oversight. The
+   * predicate is an ALLOW-LIST (default-DENY): every role that may see it is
+   * named; everyone else (notably CUSTOMER) returns false → 404.
+   *
+   *   ADMIN     → any booking
+   *   ORGANISER → bookings they created (organiserId === userId)
+   *   VENUE     → bookings targeting a venue they own
+   *   else      → false (fail closed)
+   *
+   * The controller's @Roles(ORGANISER, VENUE, ADMIN) already 403s CUSTOMER before
+   * this runs; we ALSO fail closed here so the method is safe regardless of how it
+   * is called (defence in depth — NFR-SEC-003 mandates service-layer enforcement).
+   */
+  private async canView(booking: VenueBookingDocument, actor: AuthenticatedUser): Promise<boolean> {
+    switch (actor.role) {
+      case UserRole.ADMIN:
+        return true;
+      case UserRole.ORGANISER:
+        return booking.organiserId === actor.userId;
+      case UserRole.VENUE: {
+        const ownedVenueIds = await this.getOwnedVenueIds(actor.userId);
+        return ownedVenueIds.includes(booking.venueId);
+      }
+      default:
+        return false;
+    }
+  }
+
   async findOne(vbId: string, actor: AuthenticatedUser): Promise<VenueBookingDocument> {
     const booking = await this.vbModel.findOne({ vbId }).exec();
     if (!booking) throw new NotFoundException('Venue booking not found');
 
-    // Tenant isolation: ORGANISER sees own; VENUE actor sees own venue's bookings.
-    if (actor.role === UserRole.ORGANISER && booking.organiserId !== actor.userId) {
-      throw new NotFoundException('Venue booking not found');
-    }
-    if (actor.role === UserRole.VENUE) {
-      const venue = await this.venuesService.findOne(booking.venueId, actor);
-      if (venue.ownerId !== actor.userId) throw new NotFoundException('Venue booking not found');
+    if (await this.canView(booking, actor)) {
+      return booking;
     }
 
-    return booking;
+    this.logger.warn(
+      `Tenant isolation: userId=${actor.userId} role=${actor.role} denied access to vbId=${vbId}`,
+    );
+    throw new NotFoundException('Venue booking not found');
   }
 
   async accept(
@@ -154,7 +199,9 @@ export class VenueBookingsService {
     const booking = await this.vbModel.findOne({ vbId }).exec();
     if (!booking) throw new NotFoundException('Venue booking not found');
 
-    // Tenant isolation: only the Venue that owns the target venue can accept.
+    // Tenant isolation: only the Venue that owns the target venue (or ADMIN) can
+    // accept. findOne() on the venue already 404s a VENUE actor who is not the
+    // owner; the explicit check below is retained for clarity and ADMIN passthrough.
     const venue = await this.venuesService.findOne(booking.venueId, actor);
     if (actor.role === UserRole.VENUE && venue.ownerId !== actor.userId) {
       throw new NotFoundException('Venue booking not found');
@@ -257,7 +304,7 @@ export class VenueBookingsService {
     }
   }
 
-  /** Returns venueIds owned by this VENUE actor. Used for list scoping. */
+  /** Returns venueIds owned by this VENUE actor. Used for list + read-by-id scoping. */
   private async getOwnedVenueIds(ownerId: string): Promise<string[]> {
     // Delegate to the Venue model via venuesService's underlying model.
     // PHASE 4 TODO: expose findByOwner on VenuesService to avoid reaching

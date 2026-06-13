@@ -5,17 +5,24 @@
  * RULE-08: Always use NestExpressApplication (Express adapter) — never Fastify.
  * RULE-09: Never import @Global() modules in TestingModule — declare providers explicitly.
  * RULE-11 (corrected): supertest uses default import — it has a callable default export.
- *   import * as supertest is wrong for callable modules; see build log RULE-11 correction.
  * RULE-26: MongoDB integration tests use mongodb-memory-server, not @testcontainers/mongodb.
- *   MongoMemoryReplSet avoids Windows hostname resolution issues and supports transactions.
  * RULE-27: After app.init(), call connection.syncIndexes() before any test that writes
- *   inside a transaction. MongoDB cannot implicitly create collections in a transaction.
+ *   inside a transaction.
  *
- * Test strategy:
- * - MongoMemoryReplSet: in-process MongoDB with replica set (required for transactions).
- * - Mock JwksService: returns pre-built actor payload without real RS256 verification.
- * - Mock KafkaService and OutboxService: no real Kafka needed for HTTP surface tests.
- * - Tests cover: route resolution, auth enforcement, validation, tenant isolation.
+ * NFR-SEC-004 read-authz matrix (this is the contract these tests assert):
+ *
+ *           | ACTIVE venue | PENDING_KYC venue
+ *   --------+--------------+------------------
+ *   OWNER   |    200       |    200
+ *   ADMIN   |    200       |    200
+ *   VENUE-B |    404       |    404
+ *   ORG     |    200       |    404   <-- the leak that was being fixed
+ *   CUST    |    200       |    404   <-- the leak that was being fixed
+ *
+ * The previous suite only covered OWNER / VENUE-B / ADMIN — exactly the branches
+ * the buggy code already had — so it could not catch ORG/CUST falling through to
+ * 200 on a non-ACTIVE venue. These tests are written from the contract matrix,
+ * not from the implementation's if-branches.
  */
 import { HealthController } from '../../src/health/health.controller';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
@@ -44,12 +51,28 @@ const VENUE_ACTOR = {
   jti: 'jti-venue-001',
 };
 
+const OTHER_VENUE_ACTOR = {
+  userId: 'different-venue-user-999',
+  email: 'other@test.com',
+  role: UserRole.VENUE,
+  displayName: 'Other Venue',
+  jti: 'jti-other-999',
+};
+
 const ORGANISER_ACTOR = {
   userId: 'org-user-001',
   email: 'organiser@test.com',
   role: UserRole.ORGANISER,
   displayName: 'Test Organiser',
   jti: 'jti-org-001',
+};
+
+const CUSTOMER_ACTOR = {
+  userId: 'cust-user-001',
+  email: 'customer@test.com',
+  role: UserRole.CUSTOMER,
+  displayName: 'Test Customer',
+  jti: 'jti-cust-001',
 };
 
 const ADMIN_ACTOR = {
@@ -65,27 +88,11 @@ describe('VenuesController (integration)', () => {
   let replSet: MongoMemoryReplSet;
   let connection: Connection;
 
-  const mockJwksService = {
-    validateToken: jest.fn(),
-  };
-
-  const mockKafkaService = {
-    send: jest.fn().mockResolvedValue(undefined),
-  };
-
-  // OutboxService is mocked — the real implementation requires a ClientSession
-  // passed from the caller's MongoDB transaction. Tests verify HTTP behaviour,
-  // not transactional atomicity. Atomicity is verified against the real replica
-  // set when the service runs under docker compose.
-  const mockOutboxService = {
-    create: jest.fn().mockResolvedValue(undefined),
-  };
+  const mockJwksService = { validateToken: jest.fn() };
+  const mockKafkaService = { send: jest.fn().mockResolvedValue(undefined) };
+  const mockOutboxService = { create: jest.fn().mockResolvedValue(undefined) };
 
   beforeAll(async () => {
-    // MongoMemoryReplSet: in-process MongoDB with replica set.
-    // Replica set is required because VenuesService.create() uses
-    // startSession() + startTransaction() for the Outbox pattern.
-    // Standalone MongoDB rejects transactions entirely.
     replSet = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
     const uri = replSet.getUri();
 
@@ -100,8 +107,6 @@ describe('VenuesController (integration)', () => {
       controllers: [VenuesController, HealthController],
       providers: [
         VenuesService,
-        // RULE-09: @Global() providers (JwksService, KafkaService) do not
-        // auto-populate in TestingModule — declare them explicitly as mocks.
         { provide: JwksService, useValue: mockJwksService },
         { provide: KafkaService, useValue: mockKafkaService },
         { provide: OutboxService, useValue: mockOutboxService },
@@ -110,9 +115,6 @@ describe('VenuesController (integration)', () => {
       ],
     }).compile();
 
-    // RULE-27: assign connection BEFORE app.init() and syncIndexes().
-    // connection is undefined until moduleRef.get() is called — any use
-    // before this line throws "Cannot read properties of undefined".
     connection = moduleRef.get<Connection>(getConnectionToken());
 
     app = moduleRef.createNestApplication();
@@ -121,11 +123,6 @@ describe('VenuesController (integration)', () => {
     );
     app.useGlobalFilters(new GlobalExceptionFilter());
     await app.init();
-
-    // RULE-27: force all collections and indexes to exist before any test runs.
-    // MongoDB transactions cannot implicitly create collections — if 'venues'
-    // does not exist when the first transaction starts, the insert fails with
-    // a catalog changes error. syncIndexes() creates all registered collections.
     await connection.syncIndexes();
   }, 60_000);
 
@@ -147,6 +144,26 @@ describe('VenuesController (integration)', () => {
       displayName: actor.displayName,
       jti: actor.jti,
     });
+  };
+
+  /**
+   * Flip a venue to ACTIVE directly via the collection. There is NO public
+   * "activate venue" endpoint (activation is an Admin/KYC concern out of scope
+   * here), so tests MUST NOT call one that does not exist. A direct DB write is
+   * the correct way to put a venue into the state under test.
+   */
+  const setVenueStatus = async (venueId: string, status: string): Promise<void> => {
+    await connection.collection('venues').updateOne({ venueId }, { $set: { status } });
+  };
+
+  /** Create a PENDING_KYC venue owned by VENUE_ACTOR; returns its venueId. */
+  const createVenue = async (): Promise<string> => {
+    asActor(VENUE_ACTOR);
+    const res = await supertest(app.getHttpServer())
+      .post('/venues')
+      .set('Authorization', 'Bearer mock-token')
+      .send({ name: 'Matrix Venue', city: 'Pune', address: '1 MG Road', totalCapacity: 200 });
+    return res.body.venueId as string;
   };
 
   describe('POST /venues', () => {
@@ -216,25 +233,14 @@ describe('VenuesController (integration)', () => {
     });
   });
 
-  describe('GET /venues/:venueId — tenant isolation', () => {
+  describe('GET /venues/:venueId — owner / cross-venue / admin (regression)', () => {
     let createdVenueId: string;
 
     beforeEach(async () => {
-      asActor(VENUE_ACTOR);
-      mockOutboxService.create.mockResolvedValueOnce(undefined);
-      const res = await supertest(app.getHttpServer())
-        .post('/venues')
-        .set('Authorization', 'Bearer mock-token')
-        .send({
-          name: 'Isolation Test Venue',
-          city: 'Pune',
-          address: '1 MG Road',
-          totalCapacity: 200,
-        });
-      createdVenueId = res.body.venueId;
+      createdVenueId = await createVenue();
     });
 
-    it('returns 200 for the owner (VENUE_ACTOR)', async () => {
+    it('returns 200 for the owner (VENUE_ACTOR), any status', async () => {
       asActor(VENUE_ACTOR);
       const res = await supertest(app.getHttpServer())
         .get(`/venues/${createdVenueId}`)
@@ -243,16 +249,8 @@ describe('VenuesController (integration)', () => {
       expect(res.body.venueId).toBe(createdVenueId);
     });
 
-    it('returns 404 for a different VENUE actor (tenant isolation — NFR-SEC-004)', async () => {
-      // 404 not 403: we never confirm the resource exists to an unauthorised caller.
-      // venue.yaml documents 403 here — that is a spec error. NFR-SEC-004 is authoritative.
-      mockJwksService.validateToken.mockResolvedValueOnce({
-        sub: 'different-venue-user-999',
-        email: 'other@test.com',
-        role: UserRole.VENUE,
-        displayName: 'Other Venue',
-        jti: 'jti-other-999',
-      });
+    it('returns 404 for a different VENUE actor (NFR-SEC-004)', async () => {
+      asActor(OTHER_VENUE_ACTOR);
       const res = await supertest(app.getHttpServer())
         .get(`/venues/${createdVenueId}`)
         .set('Authorization', 'Bearer mock-token');
@@ -265,6 +263,83 @@ describe('VenuesController (integration)', () => {
         .get(`/venues/${createdVenueId}`)
         .set('Authorization', 'Bearer mock-token');
       expect(res.status).toBe(200);
+    });
+  });
+
+  describe('GET /venues/:venueId — public-role visibility (NFR-SEC-004 — the fix)', () => {
+    let createdVenueId: string;
+
+    beforeEach(async () => {
+      createdVenueId = await createVenue(); // PENDING_KYC by default
+    });
+
+    it('returns 404 to an ORGANISER for a PENDING_KYC venue (was 200 — the leak)', async () => {
+      asActor(ORGANISER_ACTOR);
+      const res = await supertest(app.getHttpServer())
+        .get(`/venues/${createdVenueId}`)
+        .set('Authorization', 'Bearer mock-token');
+      expect(res.status).toBe(404);
+    });
+
+    it('returns 404 to a CUSTOMER for a PENDING_KYC venue (was 200 — the leak)', async () => {
+      asActor(CUSTOMER_ACTOR);
+      const res = await supertest(app.getHttpServer())
+        .get(`/venues/${createdVenueId}`)
+        .set('Authorization', 'Bearer mock-token');
+      expect(res.status).toBe(404);
+    });
+
+    it('returns 200 to an ORGANISER for an ACTIVE venue (public discovery preserved)', async () => {
+      await setVenueStatus(createdVenueId, 'ACTIVE');
+      asActor(ORGANISER_ACTOR);
+      const res = await supertest(app.getHttpServer())
+        .get(`/venues/${createdVenueId}`)
+        .set('Authorization', 'Bearer mock-token');
+      expect(res.status).toBe(200);
+      expect(res.body.venueId).toBe(createdVenueId);
+    });
+
+    it('returns 200 to a CUSTOMER for an ACTIVE venue (public discovery preserved)', async () => {
+      await setVenueStatus(createdVenueId, 'ACTIVE');
+      asActor(CUSTOMER_ACTOR);
+      const res = await supertest(app.getHttpServer())
+        .get(`/venues/${createdVenueId}`)
+        .set('Authorization', 'Bearer mock-token');
+      expect(res.status).toBe(200);
+    });
+
+    it('returns 404 to a CUSTOMER for a SUSPENDED venue (non-ACTIVE is not public)', async () => {
+      await setVenueStatus(createdVenueId, 'SUSPENDED');
+      asActor(CUSTOMER_ACTOR);
+      const res = await supertest(app.getHttpServer())
+        .get(`/venues/${createdVenueId}`)
+        .set('Authorization', 'Bearer mock-token');
+      expect(res.status).toBe(404);
+    });
+  });
+
+  /**
+   * Parity guard: findAll (list filter) and findOne (canView) must agree.
+   * If a venue is invisible to an actor on the list, fetching it by id must 404.
+   * This catches the next person who updates one path and forgets the other.
+   */
+  describe('findAll / findOne visibility parity (NFR-SEC-004)', () => {
+    it('a PENDING_KYC venue absent from a CUSTOMER list also 404s by id', async () => {
+      const venueId = await createVenue(); // PENDING_KYC
+
+      asActor(CUSTOMER_ACTOR);
+      const listRes = await supertest(app.getHttpServer())
+        .get('/venues')
+        .set('Authorization', 'Bearer mock-token');
+      expect(listRes.status).toBe(200);
+      const ids = (listRes.body.items as Array<{ venueId: string }>).map((v) => v.venueId);
+      expect(ids).not.toContain(venueId); // absent from list
+
+      asActor(CUSTOMER_ACTOR);
+      const byIdRes = await supertest(app.getHttpServer())
+        .get(`/venues/${venueId}`)
+        .set('Authorization', 'Bearer mock-token');
+      expect(byIdRes.status).toBe(404); // ...therefore 404 by id
     });
   });
 
